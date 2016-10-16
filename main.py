@@ -14,12 +14,13 @@ import time
 import numpy.linalg as LA
 
 
+
 algorithm = None # the algorithm created as global variable
-DIMENSION = 4
+DIMENSION = 6 
 SAMPLE_SIZE = 30
 #SHARP = 100000.0
 SHARP = 50.0
-LAMBDA1 = 0.7 
+LAMBDA1 = 0.1 
 LAMBDA2 = 100.0 / SAMPLE_SIZE
 AVE = 1  
 #LAMBDA2 = 80000.0 / SAMPLE_SIZE
@@ -163,11 +164,11 @@ class AdaptiveModularity:
 
     def loadLFR(self): 
         self.G = nx.Graph(gnc = {}, membership = {})
-        with open("./LFR_raw_data/binary_networks/mu3/network.dat", "r") as f:
+        with open("./LFR_raw_data/binary_networks/mu4/network.dat", "r") as f:
             for line in f:
                 seg = line.split()
                 self.G.add_edge( int(seg[0]), int(seg[1]) )
-        with open("./LFR_raw_data/binary_networks/mu3/community.dat", "r") as fconf:
+        with open("./LFR_raw_data/binary_networks/mu4/community.dat", "r") as fconf:
             for line in fconf:
                 seg = line.split()
                 self.G.graph["membership"][int(seg[0])] = [int(seg[1])] 
@@ -177,21 +178,22 @@ class AdaptiveModularity:
                     self.G.graph["gnc"][ int(seg[1]) ] = [ int(seg[0]) ]
         print "write gpickle file.."
         nx.write_gpickle(self.G,"./LFR.gpickle")
-        with open("LFR_mu3.group", "w+") as txt:
+        with open("LFR_mu4.group", "w+") as txt:
             for key in self.G.graph["gnc"].keys():
                 txt.write(" ".join([str(_) for _ in self.G.graph["gnc"][key]]) + "\n")
 
     def edge_feature(self, e):
-        return numpy.array([ math.sqrt(float(len(set(self.G[e[0]]).intersection(self.G[e[1]])))), \
-                             float(abs(nx.clustering(self.G, e[0]) - nx.clustering(self.G, e[1]))), \
-                             float(list(nx.jaccard_coefficient(self.G, [(e[0], e[1])]))[0][2]), \
-                             1.0
+        return numpy.array([
+                            math.sqrt(float(len(set(self.G[e[0]]).intersection(self.G[e[1]])))), \
+                            float(abs(nx.clustering(self.G, e[0]) - nx.clustering(self.G, e[1]))), \
+                            float(list(nx.jaccard_coefficient(self.G, [(e[0], e[1])]))[0][2]), \
+                            float(list(nx.resource_allocation_index(self.G, [(e[0], e[1])]))[0][2]),\
+                            float(min(len(self.G[e[0]]), len(self.G[e[1]]))) / float(max(len(self.G[e[0]]), len(self.G[e[1]]))), \
+                            1.0
                            ])
-                             #float(min(len(self.G[e[0]]), len(self.G[e[1]]))), \
-                             #float(max(len(self.G[e[0]]), len(self.G[e[1]]))), \
-                             #float(list(nx.resource_allocation_index(self.G, [(e[0], e[1])]))[0][2]), \
-                             #float(list(nx.preferential_attachment(self.G, [(e[0], e[1])]))[0][2]), \
-                             #float(list(nx.adamic_adar_index(self.G, [(e[0], e[1])]))[0][2]), \
+
+                            #float(list(nx.adamic_adar_index(self.G, [(e[0], e[1])]))[0][2]), \
+                            #float(list(nx.preferential_attachment(self.G, [(e[0], e[1])]))[0][2]), \
 
     def preprocess(self):
         self.dimension = DIMENSION 
@@ -221,10 +223,21 @@ class AdaptiveModularity:
                         self.pairs.add((i,j)) 
                         break
 
+        self.feature_normalization()
+
+        self.ein_eout_vectors()
+
+        return
+
+    def ein_eout_vectors(self):
+        for i,j in self.pairs:
+            self.preprocess_vector(i)
+            self.preprocess_vector(j)
+            self.preprocess_vector((i,j))
+
         self.ave_edge_feature = 1.0 * numpy.sum([ self.G.edge[e[0]][e[1]]["feature"] for e in self.edges_involved], axis=0) \
                                         / float(len(self.edges_involved))
         self.sum_edge_feature = self.ave_edge_feature * self.G.number_of_edges()
-
         self.cov_edge_feature = numpy.zeros((self.dimension, self.dimension)) 
         for e in self.edges_involved:
             self.cov_edge_feature = numpy.add(self.cov_edge_feature,\
@@ -235,7 +248,21 @@ class AdaptiveModularity:
         self.cov_edge_feature /= float(len(self.edges_involved))
         print "covariance matrix", self.cov_edge_feature
         print "Average edge feature:", self.ave_edge_feature
-        return
+ 
+    def feature_normalization(self):
+        self.maxf = {di : -99 for di in range(self.dimension - 1)} 
+        self.minf = {di : 999999 for di in range(self.dimension - 1)} 
+        for e in self.edges_involved:
+            for di in range(self.dimension - 1):
+                self.maxf[di] = max(self.maxf[di], self.G.edge[e[0]][e[1]]["feature"][di])
+                self.minf[di] = min(self.minf[di], self.G.edge[e[0]][e[1]]["feature"][di])
+        print "Feature Min:", self.minf
+        print "Feature Max:", self.maxf
+        for e in self.edges_involved:
+            for di in range(self.dimension - 1):
+                self.G.edge[e[0]][e[1]]["feature"][di] = \
+                    (self.G.edge[e[0]][e[1]]["feature"][di] - self.minf[di])/ \
+                    (self.maxf[di] - self.minf[di])
 
     def preprocess_helper(self, i, nodes): 
         self.comm[i] = {}
@@ -248,6 +275,8 @@ class AdaptiveModularity:
         self.comm[i]["ein"] = [e for e in edges if e[0] in nodes and e[1] in nodes]
         self.comm[i]["eout"] = [e for e in edges if not e in self.comm[i]["ein"]]
 
+
+    def preprocess_vector(self, i):
         self.comm[i]["in"] = numpy.sum([ self.G.edge[e[0]][e[1]]["feature"] for e in self.comm[i]["ein"] ], axis=0)
         self.comm[i]["cut"] = numpy.sum([ self.G.edge[e[0]][e[1]]["feature"] for e in self.comm[i]["eout"] ], axis=0)
         self.comm[i]["vol"] = 2.0 * self.comm[i]["in"] + self.comm[i]["cut"] # vol = 2 ein + eout
@@ -289,13 +318,13 @@ class AdaptiveModularity:
         #ret = numpy.inner(self.p, self.p) + LAMBDA1 * (ave_w - 1.0) ** 2.0  +  LAMBDA2 * ret
         #ret = LAMBDA1 * (ave_w - AVE) ** 2.0  +  LAMBDA2 * ret
         var = numpy.dot( p, numpy.dot(p, self.cov_edge_feature) ) - ave_w ** 2.0
-        print "f=" , (ave_w - AVE) ** 2.0 + LAMBDA1 * (var) , "+" ,  LAMBDA2 * ret,
+        print "f=" , (ave_w - AVE) ** 2.0, "+", LAMBDA1 * (var) , "+" ,  LAMBDA2 * ret,
         ret = (ave_w - AVE) ** 2.0 + LAMBDA1 * ( var )  +  LAMBDA2 * ret
         print "==" , ret 
 
         #should comment this line
-        print "negative", total_negative / float(len(self.pairs))  
-        print "var", var 
+        print "negative %:", total_negative / float(len(self.pairs))  
+        print "std var", math.sqrt(var) 
         self.validate()
 
         return ret
@@ -304,7 +333,7 @@ class AdaptiveModularity:
         '''
         @return the first order derivetive of the objective function 
         '''
-        if self.numiter >= 10: return numpy.zeros(self.dimension)
+        if self.numiter >= 15: return numpy.zeros(self.dimension)
         self.numiter += 1
         ret = 0
         self.p = p
@@ -404,8 +433,13 @@ class AdaptiveModularity:
         print "total #edges to write:", self.G.number_of_edges()
         with open(filename, "w+") as txt:
             for e in self.G.edges():
-                txt.write("%d %d %f\n" % (e[0], e[1], numpy.inner(self.p, self.edge_feature(e))))
-
+                feature =  self.edge_feature(e)
+                for di in range(self.dimension - 1):
+                    feature[di] = \
+                        (feature[di] - self.minf[di])/ \
+                        (self.maxf[di] - self.minf[di])
+                w = numpy.inner(self.p, feature)
+                txt.write("%d %d %f\n" % (e[0], e[1], w))
 
 if __name__ == "__main__":
     global algorithm
@@ -430,7 +464,7 @@ if __name__ == "__main__":
 
     print "output weighted graph LFR.."
     algorithm.loadLFR()
-    algorithm.convert("LFR.wpairs")
+    algorithm.convert("LFR_mu4.wpairs")
 
 
     #algorithm.convert()
